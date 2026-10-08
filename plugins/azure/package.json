@@ -1,6 +1,6 @@
 {
   "name": "@gram/azure",
-  "version": "4.24.0",
+  "version": "4.27.0",
   "type": "module",
   "description": "Azure icons for Gram",
   "main": "dist/index.js",
@@ -11,12 +11,13 @@
   "scripts": {
     "build": "npm run clean && npm run compile",
     "clean": "rimraf ./dist",
-    "compile": "tsc -p tsconfig.build.json"
+    "compile": "tsc -p tsconfig.build.json",
+    "test": "NODE_OPTIONS=--experimental-vm-modules NODE_ENV=test jest --detectOpenHandles --no-cache --runInBand --logHeapUsage --forceExit"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@gram/core": "^4.24.0"
+    "@gram/core": "^4.27.0"
   },
   "private": true
 }

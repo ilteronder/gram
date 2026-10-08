@@ -5,14 +5,73 @@ import { Notification, NotificationStatus } from "./Notification.js";
 import { NotificationInput } from "./NotificationInput.js";
 
 function convertToNotification(row: any) {
-  const model = new Notification(row.template_key, row.variables || {});
+  const model = new Notification(
+    row.template_key,
+    row.variables || {},
+    row.type
+  );
   model.id = row.id;
-  model.type = row.type;
   model.status = row.status;
+  model.providerRef = row.provider_ref || undefined;
+  model.confirmationAttempts = parseInt(row.confirmation_attempts ?? 0, 10);
   model.createdAt = row.created_at * 1000;
   model.updatedAt = row.updated_at * 1000;
   model.sentAt = row.sent_at * 1000;
   return model;
+}
+
+export type NotificationListFilter = {
+  status?: NotificationStatus;
+  template_key?: string;
+  type?: string;
+  /**
+   * Matched against `variables -> model ->> modelId`. There is no model_id
+   * column: review-lifecycle events carry the model they concern inside their
+   * resolved variables (see buildReviewNotificationVariables).
+   */
+  modelId?: string;
+  createdAfter?: Date | string;
+  createdBefore?: Date | string;
+  limit: number;
+  offset: number;
+};
+
+function notificationListFilterClause(filter: NotificationListFilter) {
+  const conditions: string[] = [];
+  const params: (string | Date | number)[] = [];
+
+  if (filter.status) {
+    params.push(filter.status);
+    conditions.push(`status = $${params.length}`);
+  }
+  if (filter.template_key) {
+    params.push(filter.template_key);
+    conditions.push(`template_key = $${params.length}`);
+  }
+  if (filter.type) {
+    params.push(filter.type);
+    conditions.push(`type = $${params.length}`);
+  }
+  if (filter.modelId) {
+    params.push(filter.modelId);
+    conditions.push(`variables -> 'model' ->> 'modelId' = $${params.length}`);
+  }
+  if (filter.createdAfter) {
+    params.push(filter.createdAfter);
+    conditions.push(`created_at >= $${params.length}::timestamptz`);
+  }
+  if (filter.createdBefore) {
+    params.push(filter.createdBefore);
+    conditions.push(`created_at <= $${params.length}::timestamptz`);
+  }
+
+  const where =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  params.push(filter.limit, filter.offset);
+  const suffix = `${where} ORDER BY created_at DESC, id DESC LIMIT $${
+    params.length - 1
+  }::int OFFSET $${params.length}::int`;
+  return { suffix, params };
 }
 
 export class NotificationDataService {
@@ -25,38 +84,52 @@ export class NotificationDataService {
   log = log4js.getLogger("NotificationDataService");
 
   /**
-   * Queue a new notification to be sent out
+   * Queue a new notification event to be sent out. Fans out at queue time: creates
+   * one row per currently-registered NotificationProvider, with each row's `type`
+   * set to that provider's `key`. If zero providers are registered, creates no
+   * rows at all - a channel added later never retroactively receives a backlog of
+   * past events, since there was never a row created for it.
    *
-   * @param {NotificationInput} input - Type of filter to use
-   * @returns {number} the id of the new notification
+   * The caller is responsible for resolving `input.variables` beforehand (e.g. via
+   * ReviewDataService) - this just persists it verbatim, once, into every row it
+   * creates.
+   *
+   * @param {NotificationInput} input - the event to queue
+   * @returns {number[]} the ids of the rows created, one per registered provider (empty if none)
    */
-  async queue(input: NotificationInput) {
-    const template = this.dal.templateHandler.get(input.templateKey);
+  async queue(input: NotificationInput): Promise<number[]> {
+    const providers = [...this.dal.notificationProviders.values()];
 
-    if (!template) {
-      this.log.warn(
-        `Notification skipped, no such template: ${input.templateKey}`
-      );
-      return -1;
+    if (providers.length === 0) {
+      this.log.debug("Skipped notification", {
+        meta: { templateKey: input.templateKey },
+        payload: { reason: "No notification provider registered" },
+      });
+      return [];
     }
 
-    const variables = await template.fetchVariables(this.dal, input.params);
+    const variablesJson = JSON.stringify(input.variables);
 
-    const query = `
-    INSERT INTO notifications (type, status, template_key, variables)
-    VALUES ('email', 'new', $1::varchar, $2::json)
-    RETURNING id;
-   `;
-    const res = await this.pool.query(query, [
-      input.templateKey,
-      JSON.stringify(variables),
-    ]);
+    const ids = await this.pool.runTransaction(async (client) => {
+      const insertedIds: number[] = [];
+      for (const provider of providers) {
+        const res = await client.query(
+          `INSERT INTO notifications (type, status, template_key, variables)
+           VALUES ($1::varchar, 'new', $2::varchar, $3::json)
+           RETURNING id;`,
+          [provider.key, input.templateKey, variablesJson]
+        );
+        insertedIds.push(parseInt(res.rows[0].id));
+      }
+      return insertedIds;
+    });
 
-    this.log.debug(
-      `Queued new mail ${input.templateKey} - ${JSON.stringify(input)}`
-    );
+    this.log.debug("Queued notification", {
+      meta: { templateKey: input.templateKey },
+      payload: { notificationIds: ids, count: ids.length },
+    });
 
-    return parseInt(res.rows[0].id);
+    return ids;
   }
 
   /**
@@ -82,22 +155,143 @@ export class NotificationDataService {
   }
 
   /**
+   * Claims up to 25 rows in the given status (oldest first).
+   *
+   * - `new` — claim as `pending` so the new-row handler can dispatch.
+   * - `failed` — same claim, but only rows with no `provider_ref`. A ref means
+   *   confirmation failed; claiming those would POST again.
+   * - `pending` — refresh `updated_at` and leave status `pending`, and only
+   *   rows older than `leaseMs`, so an in-flight dispatch is not selected.
+   * - `sent` / `dropped` — terminal; nothing to claim.
+   */
+  private async pollNotificationsByStatus(
+    status: NotificationStatus,
+    leaseMs?: number
+  ): Promise<Notification[]> {
+    if (status === "sent" || status === "dropped") {
+      return [];
+    }
+
+    const filters = ["status = $1"];
+    const params: Array<string | number> = [status];
+
+    if (status === "failed") {
+      /* Failed rows that already have a provider ref failed confirmation, not
+       * dispatch. Claiming them would POST again. */
+      filters.push("provider_ref IS NULL");
+    }
+
+    if (status === "pending") {
+      /* Lease is required for pending poll to avoid claiming rows that are still in flight */
+      if (leaseMs == null) {
+        throw new Error("Pending poll requires a lease");
+      }
+      params.push(leaseMs);
+      filters.push(
+        `updated_at < current_timestamp - ($${params.length}::int * interval '1 millisecond')`
+      );
+    }
+
+    const query = `
+    UPDATE notifications
+    SET status = 'pending', updated_at = current_timestamp
+    WHERE id in (
+        SELECT id FROM notifications
+        WHERE ${filters.join(" AND ")}
+        ORDER BY updated_at ASC
+        LIMIT 25
+    )
+    RETURNING *`;
+    const res = await this.pool.query(query, params);
+    this.log.debug("Polled notifications by status", {
+      meta: { status },
+      payload: { count: res.rows.length },
+    });
+    return res.rows.map(convertToNotification);
+  }
+
+  /**
    * Polls and updates for 25 notifications to be sent.
    * @returns {Notification[]}
    */
   async pollNewNotifications(): Promise<Notification[]> {
-    const query = `
-    UPDATE notifications 
-    SET status = 'pending', updated_at = current_timestamp
-    WHERE id in (
-        SELECT id FROM notifications 
-        WHERE status = 'new' 
-        ORDER BY updated_at ASC
-        LIMIT 25         
-    )
-    RETURNING *`;
-    const res = await this.pool.query(query);
-    return res.rows.map(convertToNotification);
+    return this.pollNotificationsByStatus("new");
+  }
+
+  /**
+   * Polls and claims up to 25 previously-failed notifications for a retry
+   * attempt. Claiming moves them to `pending` first, same as
+   * pollNewNotifications() - the caller processes them exactly like any other
+   * row (route by `type`, attempt delivery, resolve to sent/failed/dropped).
+   * @returns {Notification[]}
+   */
+  async pollFailedNotifications(): Promise<Notification[]> {
+    return this.pollNotificationsByStatus("failed");
+  }
+
+  /**
+   * Claims up to 25 `pending` rows whose `updated_at` is older than `leaseMs`
+   * (oldest first). Claiming only refreshes `updated_at` — status stays
+   * `pending` — so a live dispatch inside the lease is not selected, and a
+   * claimed row is not selected again until the lease passes.
+   */
+  async pollStalePendingNotifications(
+    leaseMs: number
+  ): Promise<Notification[]> {
+    return this.pollNotificationsByStatus("pending", leaseMs);
+  }
+
+  /**
+   * Stores the provider notification id and leaves `status` as `pending`.
+   * Bumps `updated_at` so the pending poller does not select the row until
+   * the lease has passed.
+   */
+  async persistProviderRef(id: number, providerRef: string) {
+    const res = await this.pool.query(
+      `UPDATE notifications
+       SET provider_ref = $2, updated_at = current_timestamp
+       WHERE id = $1`,
+      [id, providerRef]
+    );
+    return res.rowCount != null && res.rowCount > 0;
+  }
+
+  /**
+   * Moves stale pending rows that never obtained a provider ref back to `new`
+   * so the new-row poller can dispatch them. Rows that already have a ref are
+   * left untouched.
+   */
+  async reclaimPendingAsNew(ids: number[]) {
+    const safeIds = ids
+      .map((i) => parseInt(String(i), 10))
+      .filter((i) => Number.isInteger(i));
+    if (safeIds.length === 0) {
+      return false;
+    }
+    const placeholders = safeIds.map((_, index) => `$${index + 1}`).join(", ");
+    const res = await this.pool.query(
+      `UPDATE notifications
+       SET status = 'new', updated_at = current_timestamp
+       WHERE provider_ref IS NULL AND id IN (${placeholders})`,
+      safeIds
+    );
+    return res.rowCount != null && res.rowCount > 0;
+  }
+
+  /**
+   * Counts one confirmation poll that is still in flight. Does not change
+   * `status`.
+   */
+  async incrementConfirmationAttempts(id: number): Promise<number> {
+    const res = await this.pool.query(
+      `UPDATE notifications
+       SET confirmation_attempts = confirmation_attempts + 1,
+           updated_at = current_timestamp
+       WHERE id = $1
+       RETURNING confirmation_attempts`,
+      [id]
+    );
+    return parseInt(res.rows[0].confirmation_attempts, 10);
   }
 
   /**
@@ -128,6 +322,48 @@ export class NotificationDataService {
     const query = `SELECT * FROM notifications WHERE id = $1`;
     const res = await this.pool.query(query, [id]);
     return convertToNotification(res.rows[0]);
+  }
+
+  async listNotifications(
+    filter: NotificationListFilter = {
+      status: undefined,
+      template_key: undefined,
+      type: undefined,
+      createdAfter: undefined,
+      createdBefore: undefined,
+      limit: 10,
+      offset: 0,
+    }
+  ): Promise<Notification[]> {
+    const { suffix, params } = notificationListFilterClause(filter);
+    const query = `SELECT * FROM notifications ${suffix}`;
+    const res = await this.pool.query(query, params);
+    return res.rows.map(convertToNotification);
+  }
+
+  /**
+   * Deletes every notification row created before the given cutoff, regardless of
+   * its status - `sent`, `failed`, `dropped`, and even still-unresolved
+   * `new`/`pending` rows are all in scope. This is a retention backstop, not a
+   * substitute for countFailures()/countStalled(): those should catch problems
+   * well before a row is old enough to be swept up here.
+   * @param {Date} cutoff
+   * @returns {number} the number of rows deleted
+   */
+  async deleteOlderThan(cutoff: Date): Promise<number> {
+    const res = await this.pool.query(
+      `DELETE FROM notifications WHERE created_at < $1`,
+      [cutoff]
+    );
+    return res.rowCount ?? 0;
+  }
+
+  async deleteNotificationById(id: number): Promise<number> {
+    const res = await this.pool.query(
+      `DELETE FROM notifications WHERE id = $1`,
+      [id]
+    );
+    return res.rowCount ?? 0;
   }
 
   /**

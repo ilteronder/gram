@@ -18,6 +18,7 @@ import errorHandler from "./middlewares/errorHandler.js";
 import loggerMw from "./middlewares/logger.js";
 import { securityHeaders } from "./middlewares/securityHeaders.js";
 import { actionItemRouter } from "./resources/gram/v1/action-items/router.js";
+import { adminActionItemsRouter } from "./resources/gram/v1/admin/action-items/router.js";
 import crash from "./resources/gram/v1/admin/crash.js";
 import { retryReviewApproval } from "./resources/gram/v1/admin/retryReviewApproval.js";
 import setRoles from "./resources/gram/v1/admin/setRoles.js";
@@ -45,6 +46,7 @@ import { tokenRouter } from "./resources/gram/v1/token/router.js";
 import { userRouter } from "./resources/gram/v1/user/router.js";
 import { validationRouter } from "./resources/gram/v1/validation/router.js";
 import { initSentry } from "./util/sentry.js";
+import { adminNotificationRouter } from "./resources/gram/v1/admin/notifications/router.js";
 
 export async function createApp(
   dal: DataAccessLayer
@@ -58,7 +60,8 @@ export async function createApp(
   app.use(metricsMiddleware);
 
   // JSON middleware to automatically parse incoming requests
-  app.use(express.json());
+  // Limit raised to 20mb to accommodate large threat model imports (default 100kb is too small)
+  app.use(express.json({ limit: "15mb" }));
   app.use(cookieParser() as unknown as express.RequestHandler);
   app.use(securityHeaders());
 
@@ -71,7 +74,7 @@ export async function createApp(
   const cache = cacheMw();
 
   // Register Global Middleware
-  app.use(validateTokenMiddleware);
+  app.use(validateTokenMiddleware(dal));
   app.use(loggerMw(loggerMwOpts));
   app.use(express.static("frontend/"));
   app.use(authz);
@@ -166,6 +169,16 @@ export async function createApp(
     "/admin/retry_review_approval",
     authz.is(Role.Admin),
     retryReviewApproval(dal)
+  );
+  authenticatedRoutes.use(
+    "/admin/action-items",
+    authz.is(Role.Admin),
+    adminActionItemsRouter(dal)
+  );
+  authenticatedRoutes.use(
+    "/admin/notifications",
+    authz.is(Role.Admin),
+    adminNotificationRouter(dal)
   );
 
   app.use("/api/v1", unauthenticatedRoutes);

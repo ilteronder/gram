@@ -1,7 +1,7 @@
 {
   "name": "@gram/svgporn",
   "type": "module",
-  "version": "4.24.0",
+  "version": "4.27.0",
   "description": "Taken from https://github.com/gilbarbara/logos",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,11 +12,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "lint": "prettier --check .",
-    "lint-fix": "prettier -l . --write"
+    "lint-fix": "prettier -l . --write",
+    "test": "NODE_OPTIONS=--experimental-vm-modules NODE_ENV=test jest --detectOpenHandles --no-cache --runInBand --logHeapUsage --forceExit"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@gram/core": "^4.24.0"
+    "@gram/core": "^4.27.0"
   }
 }

@@ -8,12 +8,13 @@ import { createApp } from "./app.js";
 import { createControlApp } from "./controlApp.js";
 import { bootstrap } from "@gram/core/dist/bootstrap.js";
 import log4js from "log4js";
-import { notificationSender } from "@gram/core/dist/notifications/sender.js";
+import {
+  notificationHandler,
+  NotificationHandlerConfig,
+} from "@gram/core/dist/notifications/handler.js";
 import { attachWebsocketServer } from "./ws/index.js";
 import { config } from "@gram/core/dist/config/index.js";
 import { version } from "./util/version.js";
-
-const NOTIFICATION_INTERVAL = 1000 * 30; // 30 seconds
 
 const log = log4js.getLogger("api");
 
@@ -47,12 +48,17 @@ const listen = async () => {
   controlServer.listen(controlPort);
   log.info(`controlServer - listening to ${controlPort}`);
 
-  // Set up async processes (notification sender)
-  setInterval(
-    () => notificationSender(dal.notificationService, dal.templateHandler),
-    NOTIFICATION_INTERVAL
+  setInterval(() => dal.validationEngine.cache.expire(), 10 * 60 * 1000);
+
+  const intervals: Partial<NotificationHandlerConfig> =
+    config.notifications.intervals ?? {};
+
+  // Set up notification handler (polls notifications and routes them to the appropriate provider)
+  notificationHandler(
+    dal.notificationService,
+    dal.notificationProviders,
+    intervals
   );
-  setInterval(() => dal.validationEngine.cache.expire(), 10 * 60 * 1000); // Clean up the Validation cache every 10 minutes
 };
 
 listen();

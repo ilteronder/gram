@@ -3,6 +3,46 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [4.27.0](https://github.com/klarna/gram/compare/v4.26.0...v4.27.0) (2026-09-17)
+
+### Bug Fixes
+
+- **core:** remove trailing commas for prettier compliance ([1be0218](https://github.com/klarna/gram/commit/1be02181ccc06d93e5167fb0b6f0815323c288f0))
+- **logger:** merge multi-arg log calls into a single JSON line ([40849f5](https://github.com/klarna/gram/commit/40849f564c123f36df61aa42d3f8af6d7c515deb))
+
+### Features
+
+- **core:** expose modelId and system in review notification variables ([91bc5a3](https://github.com/klarna/gram/commit/91bc5a387c7a64107a21561ccaa9339b651b50de))
+
+# [4.26.0](https://github.com/klarna/gram/compare/v4.25.0...v4.26.0) (2026-08-05)
+
+### Bug Fixes
+
+- **ci:** sync lockfile and resolve core config import ([8b75793](https://github.com/klarna/gram/commit/8b75793110b1db08ab19c0a7b876f74fe767008d))
+- **deps:** align @sentry/node with @sentry/profiling-node 10.66.0 ([8af37c8](https://github.com/klarna/gram/commit/8af37c8e9c612cd3607f361d48f22a10db9a4688))
+- make all svgs work in firefox ([50bc128](https://github.com/klarna/gram/commit/50bc128b9a1ff3ba8d294f09c3a56987ac42bca2))
+
+### Features
+
+- **api:** add admin action items list and export endpoints ([ce3732c](https://github.com/klarna/gram/commit/ce3732ca970b3b2b1cf17229cabb86c91dd78ceb))
+- **api:** filter admin action items by export domain instead of exporter key ([5692ba9](https://github.com/klarna/gram/commit/5692ba9bbef428459b653655f5c5c946738517d5))
+- **auth:** add OIDC bearer token auth for M2M API access ([874d2f3](https://github.com/klarna/gram/commit/874d2f325fdfd5424687094ae09893d20cafed10))
+- **notifications:** add flexible notification provider plugin model ([f288ac8](https://github.com/klarna/gram/commit/f288ac84cfb973c559bc9e9bf662344df7cdbda0))
+- **notifications:** inject notification config into email templates ([271b44c](https://github.com/klarna/gram/commit/271b44cfa8ea077a87c2961f99f8ef7f62e90a55))
+
+# [4.25.0](https://github.com/klarna/gram/compare/v4.24.0...v4.25.0) (2026-05-28)
+
+### Bug Fixes
+
+- **models:** harden JSON import/export for orphan refs and legacy component systems ([2f2100a](https://github.com/klarna/gram/commit/2f2100a46a4a9766f60df387e9d468ff8e41292a))
+- pin jest-environment-jsdom to ^27.5.1 and sentry packages to exact versions ([75b8e15](https://github.com/klarna/gram/commit/75b8e1573a617c703a18adefc6e6bd6cf7572757))
+
+### Features
+
+- **models:** add full JSON model export/import workflow with UI support ([8defa16](https://github.com/klarna/gram/commit/8defa1661fd00fcd1df0e606da551a7af5efd9c2))
+- **models:** fix data-flow binding, make JSON import in-place only and preserve model metadata ([1e992b9](https://github.com/klarna/gram/commit/1e992b93e3a1706ab2f73948afac551dd8065ec4))
+- **models:** link data-flows data, make JSON import in-place only and preserve model metadata), fixed linter ([1aa03bd](https://github.com/klarna/gram/commit/1aa03bdabe2d91d1839172f3cd049eda4b716b80))
+
 # [4.24.0](https://github.com/klarna/gram/compare/v4.23.0...v4.24.0) (2026-03-16)
 
 ### Features
